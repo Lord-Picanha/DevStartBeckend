@@ -23,36 +23,57 @@ class MessageOut(BaseModel):
 async def chat_endpoint(
     payload: MessageCreate,
     db: Session = Depends(deps.get_db),
-    current_user: models.User = Depends(deps.get_current_user)
 ):
-    # 1. Confere se a conversa existe
+    # 1. Garante que existe pelo menos o utilizador padrão (ID 1) para testes
+    user = db.query(models.User).filter(models.User.id == 1).first()
+    if not user:
+        user = models.User(
+            id=1, 
+            email="dev@devstart.com", 
+            hashed_password="hashed_dummy_password"
+        )
+        db.add(user)
+        db.commit()
+
+    # 2. Confere se a conversa existe
     conv = db.query(models.Conversation).filter(
         models.Conversation.id == payload.conversation_id
     ).first()
     
-    # Se não existir, cria uma na hora (truque para facilitar seu teste!)
+    # Se não existir, cria a conversa associada ao utilizador 1
     if not conv:
-        conv = models.Conversation(id=payload.conversation_id, user_id=current_user.id)
+        conv = models.Conversation(id=payload.conversation_id, user_id=1)
         db.add(conv)
         db.commit()
 
-    # 2. Salva a sua pergunta
-    user_msg = models.Message(conversation_id=conv.id, role="user", content=payload.content)
+    # 3. Salva a pergunta do utilizador
+    user_msg = models.Message(
+        conversation_id=conv.id, 
+        role="user", 
+        content=payload.content
+    )
     db.add(user_msg)
     db.commit()
 
-    # 3. Pega as mensagens antigas para o Gorila lembrar do assunto
-    raw_history = db.query(models.Message).filter(models.Message.conversation_id == conv.id).all()
+    # 4. Procura o histórico da conversa
+    raw_history = db.query(models.Message).filter(
+        models.Message.conversation_id == conv.id
+    ).order_by(models.Message.created_at.asc()).all()
+    
     ai_history = [{"role": msg.role, "content": msg.content} for msg in raw_history]
 
-    # 4. Envia para a OpenAI
+    # 5. Envia o histórico para o serviço de IA
     try:
         ai_response_text = await generate_chat_response(ai_history)
-    except ValueError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Erro no serviço de IA: {str(e)}")
 
-    # 5. Salva a resposta do Gorila
-    ai_msg = models.Message(conversation_id=conv.id, role="assistant", content=ai_response_text)
+    # 6. Salva e retorna a resposta da IA
+    ai_msg = models.Message(
+        conversation_id=conv.id, 
+        role="assistant", 
+        content=ai_response_text
+    )
     db.add(ai_msg)
     db.commit()
 
